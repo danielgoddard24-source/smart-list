@@ -101,7 +101,13 @@ const LS_SECS  = "gv4_sections";
 const JSONBLOB = "https://jsonblob.com/api/jsonBlob";
 async function createBlob(data){
   const r = await fetch(JSONBLOB,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(data)});
-  return (r.headers.get("Location")||"").split("/").pop();
+  if(!r.ok) throw new Error(`Server error ${r.status}`);
+  // Location header requires Access-Control-Expose-Headers: Location from the server.
+  // Fall back to r.url in case the server used a redirect instead of a 201+Location.
+  const loc = r.headers.get("Location") || (r.url !== JSONBLOB ? r.url : "");
+  const id = loc.split("/").filter(Boolean).pop() || "";
+  if(!id) throw new Error("No share code returned by storage service");
+  return id;
 }
 async function getBlob(id){
   try{ const r=await fetch(`${JSONBLOB}/${id}`,{headers:{"Accept":"application/json"}}); return r.ok?await r.json():null }catch{return null}
@@ -645,8 +651,8 @@ function GroceryApp() {
   const pushCloud = useCallback(async(code,ni,nf,ns)=>{
     if(!code) return;
     setSyncing(true);
-    await putBlob(code,{items:ni,frequent:nf,sections:ns,updatedAt:Date.now()});
-    setSyncing(false); setLastSync(new Date());
+    try{ await putBlob(code,{items:ni,frequent:nf,sections:ns,updatedAt:Date.now()}); setLastSync(new Date()); }
+    finally{ setSyncing(false); }
   },[]);
 
   const pullCloud = useCallback(async(code)=>{
@@ -686,8 +692,8 @@ function GroceryApp() {
   // ── Sharing ────────────────────────────────────────────────────────────────
   const startSharing = async()=>{
     setShareCreating(true);
-    try{ const id=await createBlob({items,frequent,sections,updatedAt:Date.now()}); if(id){setBlobId(id);setLastSync(new Date());} else alert("Could not create shared list. Check your connection."); }
-    catch{ alert("Could not create shared list."); }
+    try{ const id=await createBlob({items,frequent,sections,updatedAt:Date.now()}); setBlobId(id); setLastSync(new Date()); }
+    catch(e){ alert("Could not create shared list. "+(e.message||"Check your connection.")); }
     finally{ setShareCreating(false); }
   };
 
