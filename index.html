@@ -99,14 +99,14 @@ const LS_SECS  = "gv4_sections";
 
 // ── Collaboration ────────────────────────────────────────────────────────────
 const JSONBLOB = "https://jsonblob.com/api/jsonBlob";
+// Generate a random 18-digit numeric ID to use as the blob key.
+// JSONBlob's PUT endpoint is "create or update", so we can supply our own ID
+// and avoid the POST→Location-header flow, which browsers block via CORS.
+const makeShareId = () => String(Math.floor(1e17 + Math.random() * 9e17));
 async function createBlob(data){
-  const r = await fetch(JSONBLOB,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(data)});
+  const id = makeShareId();
+  const r = await fetch(`${JSONBLOB}/${id}`,{method:"PUT",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(data)});
   if(!r.ok) throw new Error(`Server error ${r.status}`);
-  // Location header requires Access-Control-Expose-Headers: Location from the server.
-  // Fall back to r.url in case the server used a redirect instead of a 201+Location.
-  const loc = r.headers.get("Location") || (r.url !== JSONBLOB ? r.url : "");
-  const id = loc.split("/").filter(Boolean).pop() || "";
-  if(!id) throw new Error("No share code returned by storage service");
   return id;
 }
 async function getBlob(id){
