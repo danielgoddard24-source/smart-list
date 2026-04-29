@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>🛒 Smart Grocery List</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;background:#fff;font-family:'DM Sans',sans-serif}
+    #root{height:100%}
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
+    input[type=number]{-moz-appearance:textfield}
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:#ddd;border-radius:4px}
+    select option{background:#fff;color:#1a1a1a}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .spinner{animation:spin 0.8s linear infinite;display:inline-block}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+const F = "'DM Sans', sans-serif";
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const STORES = [
+  { id:"longos",  name:"Longo's",                  color:"#c0392b", accent:"#e74c3c" },
+  { id:"farmboy", name:"Farm Boy",                 color:"#27ae60", accent:"#2ecc71" },
+  { id:"rcss",    name:"Real Canadian Superstore", color:"#e67e22", accent:"#f39c12" },
+  { id:"costco",  name:"Costco",                   color:"#2471a3", accent:"#3498db" },
+];
+
+const ALL_CATS = [
+  { name:"Produce",       emoji:"🥦" },
+  { name:"Dairy",         emoji:"🥛" },
+  { name:"Meat",          emoji:"🥩" },
+  { name:"Bakery",        emoji:"🍞" },
+  { name:"Frozen",        emoji:"🧊" },
+  { name:"Pantry",        emoji:"🫙" },
+  { name:"Snacks",        emoji:"🍿" },
+  { name:"Beverages",     emoji:"🧃" },
+  { name:"Household",     emoji:"🧹" },
+  { name:"Personal Care", emoji:"🧴" },
+  { name:"Other",         emoji:"📦" },
+];
+const CAT_MAP = Object.fromEntries(ALL_CATS.map(c=>[c.name,c.emoji]));
+const DEFAULT_CAT_ORDER = ALL_CATS.map(c=>c.name);
+
+const DEFAULT_FREQUENT = {
+  longos:[
+    {id:"lf1",name:"Fresh Pasta",         category:"Bakery"},
+    {id:"lf2",name:"Bocconcini",           category:"Dairy"},
+    {id:"lf3",name:"San Marzano Tomatoes", category:"Pantry"},
+    {id:"lf4",name:"Arugula",              category:"Produce"},
+  ],
+  farmboy:[
+    {id:"fb1",name:"Organic Eggs",   category:"Dairy"},
+    {id:"fb2",name:"Sourdough Loaf", category:"Bakery"},
+    {id:"fb3",name:"Mixed Greens",   category:"Produce"},
+    {id:"fb4",name:"Almond Butter",  category:"Pantry"},
+  ],
+  rcss:[
+    {id:"rc1",name:"PC Greek Yogurt", category:"Dairy"},
+    {id:"rc2",name:"PC Cola",         category:"Beverages"},
+    {id:"rc3",name:"Chicken Thighs",  category:"Meat"},
+    {id:"rc4",name:"Frozen Edamame",  category:"Frozen"},
+  ],
+  costco:[
+    {id:"co1",name:"Kirkland Olive Oil",  category:"Pantry"},
+    {id:"co2",name:"Rotisserie Chicken",  category:"Meat"},
+    {id:"co3",name:"Mixed Nuts",          category:"Snacks"},
+    {id:"co4",name:"Paper Towels",        category:"Household"},
+  ],
+};
+
+// Default section order per store (all cats active)
+const DEFAULT_SECTIONS = () => Object.fromEntries(
+  STORES.map(s => [s.id, { order: [...DEFAULT_CAT_ORDER], hidden: [] }])
+);
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+let _id = Date.now();
+const uid = ()=>`i${_id++}`;
+const LS = {
+  get: k => { try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null }catch{return null} },
+  set: (k,v) => { try{localStorage.setItem(k,JSON.stringify(v))}catch{} },
+};
+const LS_ITEMS = "gv4_items";
+const LS_FREQ  = "gv4_freq";
+const LS_SECS  = "gv4_sections";
+
+// ── Collaboration ────────────────────────────────────────────────────────────
+const JSONBLOB = "https://jsonblob.com/api/jsonBlob";
+async function createBlob(data){
+  const r = await fetch(JSONBLOB,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(data)});
+  return (r.headers.get("Location")||"").split("/").pop();
+}
+async function getBlob(id){
+  try{ const r=await fetch(`${JSONBLOB}/${id}`,{headers:{"Accept":"application/json"}}); return r.ok?await r.json():null }catch{return null}
+}
+async function putBlob(id,data){
+  try{ await fetch(`${JSONBLOB}/${id}`,{method:"PUT",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(data)}) }catch{}
+}
+
+// ── Cloudinary ───────────────────────────────────────────────────────────────
+const CLD_CLOUD  = "da7thwmzx";
+const CLD_PRESET = "grocery_preset";
+async function uploadToCloudinary(file){
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("upload_preset", CLD_PRESET);
+  const r = await fetch(`https://api.cloudinary.com/v1_1/${CLD_CLOUD}/image/upload`,{method:"POST",body:fd});
+  const d = await r.json();
+  return d.secure_url || null;
+}
+
+// ── Barcode Scanner Component ─────────────────────────────────────────────────
+function BarcodeScanner({ onResult, onClose }) {
+  const videoRef = useRef();
+  const canvasRef = useRef();
+  const [status, setStatus] = useState("Starting camera…");
+  const [error,  setError]  = useState("");
+  const rafRef = useRef();
+  const streamRef = useRef();
+
+  useEffect(()=>{
+    let active = true;
+    (async()=>{
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+        if(!active){ stream.getTracks().forEach(t=>t.stop()); return; }
+        streamRef.current = stream;
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setStatus("Point camera at a barcode");
+        scanLoop();
+      } catch(e){
+        setError("Camera access denied. Please allow camera permission and try again.");
+      }
+    })();
+    return ()=>{
+      active = false;
+      cancelAnimationFrame(rafRef.current);
+      streamRef.current?.getTracks().forEach(t=>t.stop());
+    };
+  },[]);
+
+  const scanLoop = ()=>{
+    const tick = async()=>{
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if(!video||!canvas) return;
+      if(video.readyState === video.HAVE_ENOUGH_DATA){
+        canvas.width  = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext("2d").drawImage(video,0,0);
+        if("BarcodeDetector" in window){
+          try{
+            const detector = new BarcodeDetector({formats:["ean_13","ean_8","upc_a","upc_e","code_128","code_39","qr_code"]});
+            const codes = await detector.detect(canvas);
+            if(codes.length>0){
+              const barcode = codes[0].rawValue;
+              setStatus(`Found barcode: ${barcode}\nLooking up product…`);
+              streamRef.current?.getTracks().forEach(t=>t.stop());
+              lookupBarcode(barcode);
+              return;
+            }
+          }catch{}
+        } else {
+          setError("Barcode detection is not supported in this browser. Try Chrome on Android or desktop.");
+          return;
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  const lookupBarcode = async(barcode)=>{
+    try{
+      const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`);
+      const d = await r.json();
+      if(d.status===1 && d.product){
+        const p = d.product;
+        const name = p.product_name_en || p.product_name || p.abbreviated_product_name || "";
+        const img  = p.image_front_small_url || p.image_url || "";
+        if(name){ onResult({name, image:img}); return; }
+      }
+      setError(`No product found for barcode ${barcode}. You can add it manually.`);
+    }catch{
+      setError("Lookup failed. Check your connection and try again.");
+    }
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:400,background:"#000",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+      <div style={{position:"absolute",top:0,left:0,right:0,padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",zIndex:10}}>
+        <div style={{color:"white",fontWeight:700,fontSize:16,fontFamily:F}}>📷 Scan Barcode</div>
+        <button onClick={onClose} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"white",borderRadius:20,padding:"6px 14px",fontSize:14,cursor:"pointer",fontFamily:F}}>Done</button>
+      </div>
+      <video ref={videoRef} style={{width:"100%",maxWidth:500,maxHeight:"70vh",objectFit:"cover"}} playsInline muted/>
+      <canvas ref={canvasRef} style={{display:"none"}}/>
+      {/* Viewfinder overlay */}
+      <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:220,height:140,border:"2px solid rgba(255,255,255,0.7)",borderRadius:12,pointerEvents:"none",boxShadow:"0 0 0 2000px rgba(0,0,0,0.45)"}}/>
+      <div style={{position:"absolute",bottom:100,left:0,right:0,textAlign:"center",padding:"0 24px"}}>
+        {error ? (
+          <div style={{background:"rgba(200,50,50,0.85)",color:"white",borderRadius:12,padding:"12px 16px",fontSize:13,fontFamily:F,lineHeight:1.5}}>{error}</div>
+        ):(
+          <div style={{background:"rgba(0,0,0,0.6)",color:"white",borderRadius:12,padding:"10px 16px",fontSize:13,fontFamily:F,lineHeight:1.5,whiteSpace:"pre-line"}}>{status}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Item Detail Modal ─────────────────────────────────────────────────────────
+function ItemDetailModal({ item, color, accent, categories, onClose, onSave }) {
+  const [name,      setName]      = useState(item.name     || "");
+  const [category,  setCategory]  = useState(item.category || categories[0] || "Produce");
+  const [price,     setPrice]     = useState(item.price    || "");
+  const [qty,       setQty]       = useState(item.qty      || 1);
+  const [notes,     setNotes]     = useState(item.notes    || "");
+  const [url,       setUrl]       = useState(item.url      || "");
+  const [image,     setImage]     = useState(item.image    || "");
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
+  const [scanning,  setScanning]  = useState(false);
+  const fileRef = useRef();
+
+  const isImgUrl = s => /\.(jpe?g|png|gif|webp|svg)(\?.*)?$/i.test(s);
+  const preview  = image || (isImgUrl(url) ? url : null);
+
+  const handleFile = async e => {
+    const f = e.target.files?.[0];
+    if(!f) return;
+    if(f.size > 10*1024*1024){ setUploadErr("Image must be under 10 MB."); return; }
+    setUploadErr(""); setUploading(true);
+    try{
+      const url = await uploadToCloudinary(f);
+      if(url) setImage(url);
+      else setUploadErr("Upload failed — please try again.");
+    }catch{ setUploadErr("Upload failed — check your connection."); }
+    finally{ setUploading(false); if(fileRef.current) fileRef.current.value=""; }
+  };
+
+  const handleScanResult = ({name:n, image:img}) => {
+    setScanning(false);
+    if(n && !name) setName(n);
+    if(img && !image) setImage(img);
+  };
+
+  const save = () => {
+    let finalUrl = url.trim();
+    if(finalUrl && !/^https?:\/\//i.test(finalUrl)) finalUrl = "https://"+finalUrl;
+    onSave({ name: name.trim()||item.name, category, price, qty: Math.max(1,parseInt(qty)||1), notes, url: finalUrl, image });
+    onClose();
+  };
+
+  const inp = { padding:"10px 12px", background:"#f5f5f5", border:"1px solid #e0e0e0", borderRadius:9, fontSize:14, color:"#1a1a1a", fontFamily:F, outline:"none" };
+  const lbl = { fontSize:10, letterSpacing:2, color:"#888", textTransform:"uppercase", marginBottom:6, display:"block" };
+
+  if(scanning) return <BarcodeScanner onResult={handleScanResult} onClose={()=>setScanning(false)}/>;
+
+  return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.5)",backdropFilter:"blur(4px)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 20px 36px",border:"1px solid #e0e0e0",borderBottom:"none",fontFamily:F,maxHeight:"92vh",overflowY:"auto"}}>
+        <div style={{width:36,height:4,background:"#e0e0e0",borderRadius:2,margin:"0 auto 18px"}}/>
+
+        {/* Name + category */}
+        <div style={{marginBottom:14}}>
+          <span style={lbl}>Item Name</span>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Item name…" style={{...inp,width:"100%",marginBottom:8}}/>
+          <select value={category} onChange={e=>setCategory(e.target.value)} style={{...inp,width:"100%"}}>
+            {categories.map(c=><option key={c} value={c}>{CAT_MAP[c]||"📦"} {c}</option>)}
+          </select>
+        </div>
+
+        {/* Photo */}
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={lbl}>Photo</span>
+            <button onClick={()=>setScanning(true)} style={{fontSize:12,color:accent,background:"none",border:"none",cursor:"pointer",fontFamily:F,fontWeight:600}}>📷 Scan Barcode</button>
+          </div>
+          {preview ? (
+            <div style={{position:"relative"}}>
+              <img src={preview} alt="" style={{width:"100%",height:150,objectFit:"cover",borderRadius:12,display:"block"}} onError={()=>setImage("")}/>
+              <button onClick={()=>setImage("")} style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.5)",color:"white",border:"none",borderRadius:"50%",width:28,height:28,fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+            </div>
+          ) : uploading ? (
+            <div style={{height:80,background:"#f5f5f5",border:"2px dashed #ddd",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",gap:8,color:"#888",fontSize:13}}>
+              <span className="spinner">⏳</span> Uploading…
+            </div>
+          ) : (
+            <button onClick={()=>fileRef.current.click()} style={{width:"100%",height:80,background:"#f5f5f5",border:"2px dashed #ddd",borderRadius:12,color:"#999",fontSize:13,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,fontFamily:F}}>
+              <span style={{fontSize:22}}>📷</span>
+              <span>Upload a photo</span>
+              <span style={{fontSize:11,color:"#ccc"}}>Stored privately in Cloudinary · max 10 MB</span>
+            </button>
+          )}
+          {uploadErr && <div style={{fontSize:12,color:"#e05555",marginTop:5}}>{uploadErr}</div>}
+          <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{display:"none"}}/>
+        </div>
+
+        {/* Notes */}
+        <div style={{marginBottom:14}}>
+          <span style={lbl}>Notes</span>
+          <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="e.g. get the lactose-free one, only if on sale…" rows={2}
+            style={{...inp,width:"100%",resize:"vertical",lineHeight:1.5}}/>
+        </div>
+
+        {/* URL */}
+        <div style={{marginBottom:14}}>
+          <span style={lbl}>Product URL</span>
+          <div style={{display:"flex",gap:8}}>
+            <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://store.com/product…" style={{...inp,flex:1}}/>
+            {url && <a href={url.startsWith("http")?url:"https://"+url} target="_blank" rel="noopener noreferrer" style={{padding:"10px 13px",background:"#f0f0f0",border:"1px solid #e0e0e0",borderRadius:9,color:"#444",fontSize:15,textDecoration:"none",display:"flex",alignItems:"center"}}>↗</a>}
+          </div>
+        </div>
+
+        {/* Qty + Price */}
+        <div style={{marginBottom:22}}>
+          <div style={{display:"flex",gap:12}}>
+            <div style={{flex:1}}>
+              <span style={lbl}>Quantity</span>
+              <input value={qty} onChange={e=>setQty(e.target.value)} type="number" min="1" step="1" placeholder="1" style={{...inp,width:"100%",textAlign:"center"}}/>
+            </div>
+            <div style={{flex:2}}>
+              <span style={lbl}>Price ($)</span>
+              <input value={price} onChange={e=>setPrice(e.target.value)} type="number" step="0.01" min="0" placeholder="0.00" style={{...inp,width:"100%"}}/>
+            </div>
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={onClose} style={{flex:1,padding:13,background:"#f0f0f0",color:"#888",border:"none",borderRadius:11,fontWeight:600,fontSize:15,cursor:"pointer",fontFamily:F}}>Cancel</button>
+          <button onClick={save} disabled={uploading} style={{flex:2,padding:13,background:uploading?"#ccc":color,color:"white",border:"none",borderRadius:11,fontWeight:700,fontSize:15,cursor:uploading?"default":"pointer",fontFamily:F}}>
+            {uploading?"Uploading…":"Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Section Manager Modal ─────────────────────────────────────────────────────
+const SECTION_EMOJIS = ["🥦","🥛","🥩","🍞","🧊","🫙","🍿","🧃","🧹","🧴","📦","🌿","🐟","🧁","🫐","🥚","🌾","🧀","🫒","🛒"];
+
+function SectionManager({ storeId, sections, onUpdate, onClose, color }) {
+  const sec = sections[storeId] || { order:[...DEFAULT_CAT_ORDER], hidden:[] };
+  const [order,     setOrder]     = useState([...sec.order]);
+  const [hidden,    setHidden]    = useState([...sec.hidden]);
+  const [newName,   setNewName]   = useState("");
+  const [newEmoji,  setNewEmoji]  = useState("📦");
+  const [addingNew, setAddingNew] = useState(false);
+  const [deleteConf,setDeleteConf]= useState(null); // name to confirm delete
+  const inputRef = useRef();
+
+  const moveUp   = i => { if(i===0) return; const o=[...order]; [o[i-1],o[i]]=[o[i],o[i-1]]; setOrder(o); };
+  const moveDown = i => { if(i===order.length-1) return; const o=[...order]; [o[i],o[i+1]]=[o[i+1],o[i]]; setOrder(o); };
+  const toggleHide = name => setHidden(h=>h.includes(name)?h.filter(x=>x!==name):[...h,name]);
+
+  const addSection = () => {
+    const n = newName.trim();
+    if(!n) return;
+    if(order.includes(n)){ setNewName(""); setAddingNew(false); return; }
+    // Register emoji for this custom section
+    CAT_MAP[n] = newEmoji;
+    setOrder(o=>[...o, n]);
+    setNewName(""); setNewEmoji("📦"); setAddingNew(false);
+  };
+
+  const deleteSection = name => {
+    setOrder(o=>o.filter(x=>x!==name));
+    setHidden(h=>h.filter(x=>x!==name));
+    setDeleteConf(null);
+  };
+
+  const save = () => { onUpdate(storeId, { order, hidden }); onClose(); };
+
+  const inp = { padding:"9px 12px", background:"#f5f5f5", border:"1px solid #e0e0e0", borderRadius:9, fontSize:14, color:"#1a1a1a", fontFamily:F, outline:"none" };
+
+  return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.5)",backdropFilter:"blur(4px)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 20px 36px",border:"1px solid #e0e0e0",borderBottom:"none",fontFamily:F,maxHeight:"88vh",overflowY:"auto"}}>
+        <div style={{width:36,height:4,background:"#e0e0e0",borderRadius:2,margin:"0 auto 18px"}}/>
+
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <div style={{fontSize:17,fontWeight:700,color:"#1a1a1a"}}>Manage Sections</div>
+          <button onClick={()=>{setAddingNew(true); setTimeout(()=>inputRef.current?.focus(),50);}}
+            style={{background:color,color:"white",border:"none",borderRadius:9,padding:"6px 14px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:F}}>
+            + Add
+          </button>
+        </div>
+        <div style={{fontSize:12,color:"#aaa",marginBottom:16}}>Reorder, show/hide, add, or delete sections. Changes apply to this store only.</div>
+
+        {/* Add new section form */}
+        {addingNew && (
+          <div style={{background:"#f9f9f9",borderRadius:12,padding:12,marginBottom:14,border:"1px solid #ececec"}}>
+            <div style={{fontSize:10,letterSpacing:2,color:"#888",textTransform:"uppercase",marginBottom:8}}>New Section</div>
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              {/* Emoji picker */}
+              <select value={newEmoji} onChange={e=>setNewEmoji(e.target.value)}
+                style={{...inp,width:64,textAlign:"center",fontSize:20,padding:"6px 4px"}}>
+                {SECTION_EMOJIS.map(e=><option key={e} value={e}>{e}</option>)}
+              </select>
+              <input ref={inputRef} value={newName} onChange={e=>setNewName(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&addSection()}
+                placeholder="Section name…" style={{...inp,flex:1}}/>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{setAddingNew(false);setNewName("");}}
+                style={{flex:1,padding:9,background:"#f0f0f0",color:"#888",border:"none",borderRadius:9,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F}}>Cancel</button>
+              <button onClick={addSection}
+                style={{flex:2,padding:9,background:color,color:"white",border:"none",borderRadius:9,fontWeight:700,fontSize:14,cursor:"pointer",fontFamily:F}}>Add Section</button>
+            </div>
+          </div>
+        )}
+
+        {/* Delete confirmation */}
+        {deleteConf && (
+          <div style={{background:"#fff5f5",borderRadius:12,padding:12,marginBottom:14,border:"1px solid #f5c0c0"}}>
+            <div style={{fontSize:14,color:"#c0392b",fontWeight:600,marginBottom:8}}>Delete "{deleteConf}"?</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:12}}>Items in this section won't be deleted — they'll move to "Other".</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setDeleteConf(null)} style={{flex:1,padding:9,background:"#f0f0f0",color:"#888",border:"none",borderRadius:9,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F}}>Cancel</button>
+              <button onClick={()=>deleteSection(deleteConf)} style={{flex:2,padding:9,background:"#e05555",color:"white",border:"none",borderRadius:9,fontWeight:700,fontSize:14,cursor:"pointer",fontFamily:F}}>Delete</button>
+            </div>
+          </div>
+        )}
+
+        {/* Section list */}
+        {order.map((name, i) => {
+          const emoji = CAT_MAP[name] || "📦";
+          const isHidden = hidden.includes(name);
+          const isBuiltIn = DEFAULT_CAT_ORDER.includes(name);
+          return (
+            <div key={name} style={{display:"flex",alignItems:"center",background:isHidden?"#fafafa":"#fff",borderRadius:10,padding:"10px 10px",marginBottom:6,border:`1px solid ${isHidden?"#f0f0f0":"#e8e8e8"}`,gap:7,opacity:isHidden?0.55:1,transition:"opacity 0.15s"}}>
+              {/* Reorder */}
+              <div style={{display:"flex",flexDirection:"column",gap:1,flexShrink:0}}>
+                <button onClick={()=>moveUp(i)}   disabled={i===0}                style={{background:"none",border:"none",cursor:i===0?"default":"pointer",              color:i===0?"#ddd":"#999",fontSize:11,padding:"1px 4px",lineHeight:1}}>▲</button>
+                <button onClick={()=>moveDown(i)} disabled={i===order.length-1}   style={{background:"none",border:"none",cursor:i===order.length-1?"default":"pointer",color:i===order.length-1?"#ddd":"#999",fontSize:11,padding:"1px 4px",lineHeight:1}}>▼</button>
+              </div>
+              <span style={{fontSize:19,flexShrink:0}}>{emoji}</span>
+              <span style={{flex:1,fontSize:15,color:"#1a1a1a",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+              {/* Show/Hide toggle */}
+              <button onClick={()=>toggleHide(name)} style={{padding:"4px 10px",borderRadius:7,border:"none",background:isHidden?"#e8e8e8":color,color:isHidden?"#888":"white",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:F,flexShrink:0}}>
+                {isHidden?"Show":"Hide"}
+              </button>
+              {/* Delete — only custom sections can be deleted, built-ins just hidden */}
+              {!isBuiltIn && (
+                <button onClick={()=>setDeleteConf(name)} style={{background:"none",border:"none",color:"#e08080",fontSize:17,cursor:"pointer",padding:"0 2px",lineHeight:1,flexShrink:0}}>🗑</button>
+              )}
+            </div>
+          );
+        })}
+
+        {order.length===0&&<div style={{textAlign:"center",color:"#ccc",padding:"24px 0",fontSize:14}}>No sections. Add one above.</div>}
+
+        <div style={{display:"flex",gap:10,marginTop:18}}>
+          <button onClick={onClose} style={{flex:1,padding:12,background:"#f0f0f0",color:"#888",border:"none",borderRadius:11,fontWeight:600,fontSize:15,cursor:"pointer",fontFamily:F}}>Cancel</button>
+          <button onClick={save}    style={{flex:2,padding:12,background:color,color:"white",border:"none",borderRadius:11,fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:F}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Item Row ──────────────────────────────────────────────────────────────────
+function ItemRow({ item, color, accent, checked, categories, onCheck, onRemove, onUpdate }) {
+  const [modal, setModal] = useState(false);
+  const hasMedia = item.image || item.url;
+
+  return (
+    <>
+      <div style={{background:checked?"#fafafa":"#fff",borderRadius:11,marginBottom:6,border:`1px solid ${checked?"#f0f0f0":"#e8e8e8"}`,opacity:checked?0.6:1,overflow:"hidden",transition:"opacity 0.2s",boxShadow:checked?"none":"0 1px 4px rgba(0,0,0,0.04)"}}>
+        {item.image && !checked && (
+          <div style={{height:80,cursor:"pointer",position:"relative"}} onClick={()=>setModal(true)}>
+            <img src={item.image} alt={item.name} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+            <div style={{position:"absolute",inset:0,background:"linear-gradient(to top,rgba(0,0,0,0.35) 0%,transparent 50%)"}}/>
+          </div>
+        )}
+        <div style={{display:"flex",alignItems:"center",padding:"10px 12px",gap:9}}>
+          <button onClick={onCheck} style={{width:22,height:22,borderRadius:6,flexShrink:0,border:`2px solid ${checked?color:"#d0d0d0"}`,background:checked?color:"transparent",color:"white",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            {checked&&"✓"}
+          </button>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:15,color:"#1a1a1a",fontFamily:F,textDecoration:checked?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              {item.name}
+              {item.qty>1&&<span style={{fontSize:12,color:"#aaa",marginLeft:5}}>×{item.qty}</span>}
+            </div>
+            {item.notes&&!checked&&<div style={{fontSize:12,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>📝 {item.notes}</div>}
+            {item.url&&!checked&&<a href={item.url} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:accent,textDecoration:"none",display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🔗 {item.url.replace(/^https?:\/\//,"").split("/")[0]}</a>}
+          </div>
+          {item.price&&<span style={{color:accent,fontSize:13,fontWeight:600,flexShrink:0}}>${(parseFloat(item.price)*(item.qty||1)).toFixed(2)}</span>}
+          <button onClick={()=>setModal(true)} title="Edit details" style={{background:hasMedia?`${color}18`:"none",border:hasMedia?`1px solid ${color}40`:"1px solid #e8e8e8",color:hasMedia?color:"#ccc",fontSize:13,cursor:"pointer",padding:"3px 7px",borderRadius:6,flexShrink:0}}>
+            {hasMedia?"🖼":"✏️"}
+          </button>
+          <button onClick={onRemove} style={{background:"none",border:"none",color:"#ccc",fontSize:19,cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>×</button>
+        </div>
+      </div>
+      {modal&&<ItemDetailModal item={item} color={color} accent={accent} categories={categories} onClose={()=>setModal(false)} onSave={upd=>{onUpdate(upd);setModal(false);}}/>}
+    </>
+  );
+}
+
+// ── Trip Mode ─────────────────────────────────────────────────────────────────
+function TripMode({ items, store, catOrder, onCheck, onExit }) {
+  const unchecked = items.filter(i=>!i.checked);
+  const checked   = items.filter(i=>i.checked);
+  const bycat = catOrder.reduce((a,cat)=>{ const its=unchecked.filter(i=>i.category===cat); if(its.length) a.push({cat,its}); return a; },[]);
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:200,background:"#fff",display:"flex",flexDirection:"column",fontFamily:F}}>
+      {/* Header */}
+      <div style={{background:store.color,padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <div>
+          <div style={{color:"rgba(255,255,255,0.75)",fontSize:11,letterSpacing:2,textTransform:"uppercase"}}>Trip Mode</div>
+          <div style={{color:"white",fontWeight:700,fontSize:20}}>{store.name}</div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{color:"white",fontWeight:700,fontSize:22}}>{unchecked.length} left</div>
+          <button onClick={onExit} style={{marginTop:4,background:"rgba(255,255,255,0.2)",border:"none",color:"white",borderRadius:20,padding:"5px 14px",fontSize:13,cursor:"pointer",fontFamily:F}}>✕ Exit</button>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{height:4,background:"#f0f0f0",flexShrink:0}}>
+        <div style={{height:"100%",background:store.accent,width:`${items.length?checked.length/items.length*100:0}%`,transition:"width 0.3s"}}/>
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:"12px 16px"}}>
+        {bycat.map(({cat,its})=>(
+          <div key={cat} style={{marginBottom:18}}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#aaa",textTransform:"uppercase",marginBottom:8,fontWeight:600}}>{CAT_MAP[cat]||"📦"} {cat}</div>
+            {its.map(item=>(
+              <button key={item.id} onClick={()=>onCheck(item.id)}
+                style={{width:"100%",display:"flex",alignItems:"center",gap:14,padding:"14px 16px",background:"#fff",border:`1.5px solid #e8e8e8`,borderRadius:14,marginBottom:8,cursor:"pointer",fontFamily:F,textAlign:"left",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+                <div style={{width:28,height:28,borderRadius:8,border:`2.5px solid ${store.color}`,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",background:"white"}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:17,fontWeight:600,color:"#1a1a1a"}}>{item.name}{item.qty>1&&<span style={{fontWeight:400,color:"#aaa",fontSize:14}}> ×{item.qty}</span>}</div>
+                  {item.notes&&<div style={{fontSize:13,color:"#888",marginTop:2}}>📝 {item.notes}</div>}
+                </div>
+                {item.image&&<img src={item.image} alt="" style={{width:44,height:44,objectFit:"cover",borderRadius:8,flexShrink:0}}/>}
+                {item.price&&<div style={{fontSize:14,fontWeight:600,color:store.accent,flexShrink:0}}>${(parseFloat(item.price)*(item.qty||1)).toFixed(2)}</div>}
+              </button>
+            ))}
+          </div>
+        ))}
+
+        {unchecked.length===0&&(
+          <div style={{textAlign:"center",padding:"60px 0"}}>
+            <div style={{fontSize:48,marginBottom:12}}>🎉</div>
+            <div style={{fontSize:20,fontWeight:700,color:"#1a1a1a",marginBottom:6}}>All done!</div>
+            <div style={{color:"#aaa",fontSize:14}}>Everything is in the basket.</div>
+          </div>
+        )}
+
+        {checked.length>0&&(
+          <div style={{marginTop:12}}>
+            <div style={{fontSize:11,letterSpacing:2,color:"#ccc",textTransform:"uppercase",marginBottom:8}}>✓ In Basket ({checked.length})</div>
+            {checked.map(item=>(
+              <button key={item.id} onClick={()=>onCheck(item.id)}
+                style={{width:"100%",display:"flex",alignItems:"center",gap:14,padding:"12px 16px",background:"#fafafa",border:"1px solid #f0f0f0",borderRadius:12,marginBottom:6,cursor:"pointer",fontFamily:F,textAlign:"left",opacity:0.5}}>
+                <div style={{width:26,height:26,borderRadius:7,background:store.color,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:14}}>✓</div>
+                <div style={{fontSize:15,color:"#888",textDecoration:"line-through",flex:1}}>{item.name}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function GroceryApp() {
+  const [loaded,       setLoaded]       = useState(false);
+  const [items,        setItems]        = useState({});
+  const [frequent,     setFrequent]     = useState(DEFAULT_FREQUENT);
+  const [sections,     setSections]     = useState(DEFAULT_SECTIONS());
+  const [activeStore,  setActiveStore]  = useState("longos");
+  const [view,         setView]         = useState("list"); // list | frequent | share
+  const [tripMode,     setTripMode]     = useState(false);
+  const [showSections, setShowSections] = useState(false);
+  const [blobId,       setBlobId]       = useState(null);
+  const [syncing,      setSyncing]      = useState(false);
+  const [lastSync,     setLastSync]     = useState(null);
+  const [showCopied,   setShowCopied]   = useState(false);
+  const [joinCode,     setJoinCode]     = useState("");
+  const [joinError,    setJoinError]    = useState("");
+  const [shareCreating,setShareCreating]= useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  // Add form
+  const [newName,     setNewName]     = useState("");
+  const [newCat,      setNewCat]      = useState("Produce");
+  const [newQty,      setNewQty]      = useState(1);
+  const [newPrice,    setNewPrice]    = useState("");
+  const [addingFreq,  setAddingFreq]  = useState(false);
+  const [newFreqName, setNewFreqName] = useState("");
+  const [newFreqCat,  setNewFreqCat]  = useState("Produce");
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const store      = STORES.find(s=>s.id===activeStore);
+  const storeSec   = sections[activeStore] || { order:[...DEFAULT_CAT_ORDER], hidden:[] };
+  const catOrder   = storeSec.order.filter(c=>!storeSec.hidden.includes(c));
+  const visibleCats = catOrder; // sections visible in list
+  const storeItems = items[activeStore] || [];
+  const unchecked  = storeItems.filter(i=>!i.checked);
+  const checked    = storeItems.filter(i=> i.checked);
+  const grandTotal = Object.values(items).flat().length;
+  const runTotal   = storeItems.reduce((s,i)=>s+(parseFloat(i.price)||0)*(i.qty||1),0);
+  const unchTotal  = unchecked.reduce( (s,i)=>s+(parseFloat(i.price)||0)*(i.qty||1),0);
+  const freqItems  = frequent[activeStore] || [];
+  const inListSet  = new Set(storeItems.map(i=>i.name.toLowerCase()));
+  const byCategory = catOrder.reduce((a,cat)=>{
+    const its = unchecked.filter(i=>i.category===cat);
+    if(its.length) a.push({cat,its});
+    return a;
+  },[]);
+  // uncategorised items (category hidden or unknown)
+  const otherUnchecked = unchecked.filter(i=>!catOrder.includes(i.category));
+
+  // ── Persistence ────────────────────────────────────────────────────────────
+  useEffect(()=>{
+    const i=LS.get(LS_ITEMS), f=LS.get(LS_FREQ), s=LS.get(LS_SECS);
+    if(i) setItems(i);
+    if(f) setFrequent(f);
+    if(s) setSections(s);
+    setLoaded(true);
+  },[]);
+  useEffect(()=>{ if(loaded) LS.set(LS_ITEMS,items); },[items,loaded]);
+  useEffect(()=>{ if(loaded) LS.set(LS_FREQ,frequent); },[frequent,loaded]);
+  useEffect(()=>{ if(loaded) LS.set(LS_SECS,sections); },[sections,loaded]);
+
+  // ── Cloud sync ─────────────────────────────────────────────────────────────
+  const pushCloud = useCallback(async(code,ni,nf,ns)=>{
+    if(!code) return;
+    setSyncing(true);
+    await putBlob(code,{items:ni,frequent:nf,sections:ns,updatedAt:Date.now()});
+    setSyncing(false); setLastSync(new Date());
+  },[]);
+
+  const pullCloud = useCallback(async(code)=>{
+    const d=await getBlob(code);
+    if(d){ setItems(d.items||{}); setFrequent(d.frequent||DEFAULT_FREQUENT); if(d.sections) setSections(d.sections); setLastSync(new Date()); }
+  },[]);
+
+  useEffect(()=>{ if(!blobId) return; const iv=setInterval(()=>pullCloud(blobId),5000); return()=>clearInterval(iv); },[blobId,pullCloud]);
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
+  const mutItems = fn => setItems(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,next,frequent,sections); return next; });
+  const mutFreq  = fn => setFrequent(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,next,sections); return next; });
+  const mutSecs  = fn => setSections(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,frequent,next); return next; });
+
+  const addItem = (overrides={}) => {
+    const name = (overrides.name||newName).trim();
+    if(!name) return;
+    mutItems(p=>({...p,[activeStore]:[...(p[activeStore]||[]),{id:uid(),name,category:overrides.category||newCat,qty:overrides.qty||newQty,price:overrides.price||newPrice,notes:"",url:"",image:overrides.image||"",checked:false}]}));
+    setNewName(""); setNewQty(1); setNewPrice("");
+  };
+
+  const addFromFreq = fi => {
+    if(inListSet.has(fi.name.toLowerCase())) return;
+    mutItems(p=>({...p,[activeStore]:[...(p[activeStore]||[]),{id:uid(),name:fi.name,category:fi.category,qty:1,price:"",notes:"",url:"",image:"",checked:false}]}));
+  };
+
+  const toggleCheck  = id  => mutItems(p=>({...p,[activeStore]:(p[activeStore]||[]).map(i=>i.id===id?{...i,checked:!i.checked}:i)}));
+  const removeItem   = id  => mutItems(p=>({...p,[activeStore]:(p[activeStore]||[]).filter(i=>i.id!==id)}));
+  const updateItem   = (id,upd) => mutItems(p=>({...p,[activeStore]:(p[activeStore]||[]).map(i=>i.id===id?{...i,...upd}:i)}));
+  const clearChecked = ()  => mutItems(p=>({...p,[activeStore]:(p[activeStore]||[]).filter(i=>!i.checked)}));
+
+  const addFreqItem    = ()  => { if(!newFreqName.trim()) return; mutFreq(p=>({...p,[activeStore]:[...(p[activeStore]||[]),{id:uid(),name:newFreqName.trim(),category:newFreqCat}]})); setNewFreqName(""); setAddingFreq(false); };
+  const removeFreqItem = fid => mutFreq(p=>({...p,[activeStore]:(p[activeStore]||[]).filter(f=>f.id!==fid)}));
+
+  const updateSections = (storeId, sec) => mutSecs(p=>({...p,[storeId]:sec}));
+
+  // ── Sharing ────────────────────────────────────────────────────────────────
+  const startSharing = async()=>{
+    setShareCreating(true);
+    try{ const id=await createBlob({items,frequent,sections,updatedAt:Date.now()}); if(id){setBlobId(id);setLastSync(new Date());} else alert("Could not create shared list. Check your connection."); }
+    catch{ alert("Could not create shared list."); }
+    finally{ setShareCreating(false); }
+  };
+
+  const joinList = async()=>{
+    const id=joinCode.trim(); if(!id){setJoinError("Enter a valid list code.");return;}
+    const d=await getBlob(id); if(!d){setJoinError("No list found with that code.");return;}
+    setItems(d.items||{}); setFrequent(d.frequent||DEFAULT_FREQUENT); if(d.sections) setSections(d.sections);
+    setBlobId(id); setJoinError(""); setView("list");
+  };
+
+  const copyCode=()=>{ navigator.clipboard.writeText(blobId).catch(()=>{}); setShowCopied(true); setTimeout(()=>setShowCopied(false),2000); };
+
+  // ── Styles ─────────────────────────────────────────────────────────────────
+  const inp  = { padding:"10px 12px", background:"#f5f5f5", border:"1px solid #e0e0e0", borderRadius:9, fontSize:14, color:"#1a1a1a", fontFamily:F, outline:"none" };
+  const lbl  = { fontSize:10, letterSpacing:2.5, color:"#888", textTransform:"uppercase", marginBottom:8, display:"block" };
+  const card = { background:"#f9f9f9", borderRadius:14, padding:14, marginBottom:14, border:"1px solid #ececec" };
+  const tab  = active => ({ flex:1, padding:"11px 0", background:"none", border:"none", borderBottom:active?`3px solid ${store.accent}`:"3px solid transparent", color:active?store.color:"#aaa", fontWeight:active?700:400, fontSize:12, cursor:"pointer", letterSpacing:0.4, transition:"all 0.15s", fontFamily:F });
+
+  // ── Loading ────────────────────────────────────────────────────────────────
+  if(!loaded) return <div style={{minHeight:"100vh",background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",color:"#aaa",fontFamily:F,fontSize:15}}>Loading…</div>;
+
+  // ── Trip Mode overlay ──────────────────────────────────────────────────────
+  if(tripMode) return <TripMode items={storeItems} store={store} catOrder={catOrder} onCheck={toggleCheck} onExit={()=>setTripMode(false)}/>;
+
+  // ── Add Item Modal (floating) ─────────────────────────────────────────────
+  const blankItem = { name:"", category:catOrder[0]||"Produce", qty:1, price:"", notes:"", url:"", image:"" };
+
+  return (
+    <div style={{minHeight:"100vh",background:"#fff",fontFamily:F,display:"flex",flexDirection:"column",maxWidth:500,margin:"0 auto",boxShadow:"0 0 40px rgba(0,0,0,0.06)"}}>
+
+      {/* HEADER */}
+      <div style={{padding:"20px 18px 0",color:"#1a1a1a",background:"#fff"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
+          <div>
+            <div style={{fontSize:10,letterSpacing:4,color:"#aaa",textTransform:"uppercase",marginBottom:3}}>{blobId?`🔗 Live · ${blobId.slice(0,8)}…`:"Grocery Planner"}</div>
+            <div style={{fontSize:24,fontWeight:700,color:"#1a1a1a"}}>🛒 Smart List</div>
+          </div>
+          <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+            {runTotal>0&&<div style={{fontSize:22,fontWeight:700,color:store.color}}>${runTotal.toFixed(2)}</div>}
+            {grandTotal>0&&<div style={{fontSize:11,color:"#aaa"}}>{grandTotal} item{grandTotal!==1?"s":""}</div>}
+            {/* Trip mode button */}
+            {storeItems.length>0&&(
+              <button onClick={()=>setTripMode(true)} style={{background:store.color,color:"white",border:"none",borderRadius:20,padding:"5px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:F}}>
+                🛍 Trip Mode
+              </button>
+            )}
+            {syncing&&<div style={{fontSize:10,color:"#aaa"}}>⟳ syncing…</div>}
+            {lastSync&&!syncing&&<div style={{fontSize:10,color:"#bbb"}}>✓ synced</div>}
+          </div>
+        </div>
+
+        {/* Store tabs */}
+        <div style={{display:"flex",gap:2,marginTop:14}}>
+          {STORES.map(s=>{
+            const cnt=(items[s.id]||[]).filter(i=>!i.checked).length;
+            const active=s.id===activeStore;
+            const short=s.id==="rcss"?"RCSS":s.id==="farmboy"?"Farm Boy":s.name.split(" ")[0];
+            return (
+              <button key={s.id} onClick={()=>{setActiveStore(s.id);setView("list");}} style={{flex:1,background:active?s.color:"#f0f0f0",color:active?"white":"#888",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 4px",fontSize:11,fontWeight:active?700:500,cursor:"pointer",whiteSpace:"nowrap",transition:"all 0.2s",fontFamily:F,position:"relative"}}>
+                {short}
+                {cnt>0&&<span style={{position:"absolute",top:3,right:3,background:active?"rgba(255,255,255,0.3)":s.color,color:"white",borderRadius:10,fontSize:9,padding:"1px 5px",fontWeight:700}}>{cnt}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* VIEW TABS */}
+      <div style={{display:"flex",background:"#fff",padding:"0 16px",borderBottom:"1px solid #ececec"}}>
+        <button style={tab(view==="list")}      onClick={()=>setView("list")}>📋 List</button>
+        <button style={tab(view==="frequent")}  onClick={()=>setView("frequent")}>⭐ Frequent</button>
+        <button style={tab(view==="share")}     onClick={()=>setView("share")}>🔗 {blobId?"Sharing":"Share"}</button>
+      </div>
+
+      {/* CONTENT */}
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ═══ LIST ═══ */}
+        {view==="list"&&(
+          <>
+            {/* Add item inline form */}
+            <div style={card}>
+              <span style={lbl}>Add Item</span>
+              <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addItem()}
+                placeholder="Item name…" style={{...inp,width:"100%",marginBottom:8}}/>
+              <div style={{display:"flex",gap:6,marginBottom:8}}>
+                <select value={newCat} onChange={e=>setNewCat(e.target.value)} style={{...inp,flex:2}}>
+                  {catOrder.map(c=><option key={c} value={c}>{CAT_MAP[c]||"📦"} {c}</option>)}
+                </select>
+                <input type="number" min={1} value={newQty} onChange={e=>setNewQty(+e.target.value)} style={{...inp,width:52,textAlign:"center"}}/>
+                <input value={newPrice} onChange={e=>setNewPrice(e.target.value)} type="number" step="0.01" min="0" placeholder="$" style={{...inp,width:64}}/>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>addItem()} style={{flex:1,padding:11,background:store.color,color:"white",border:"none",borderRadius:9,fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:F}}>+ Add</button>
+                <button onClick={()=>setShowAddModal(true)} title="Add with photo/barcode/notes" style={{padding:"11px 14px",background:"#f5f5f5",border:"1px solid #e0e0e0",borderRadius:9,fontSize:16,cursor:"pointer"}}>📷</button>
+              </div>
+            </div>
+
+            {/* Quick add chips */}
+            {freqItems.length>0&&(
+              <div style={{marginBottom:14}}>
+                <span style={lbl}>Quick Add</span>
+                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                  {freqItems.map(fi=>{
+                    const already=inListSet.has(fi.name.toLowerCase());
+                    return (
+                      <button key={fi.id} onClick={()=>addFromFreq(fi)} style={{padding:"5px 12px",borderRadius:20,border:`1.5px solid ${already?store.color:"#d0d0d0"}`,background:already?store.color:"#f5f5f5",color:already?"white":"#444",fontSize:12,fontWeight:500,cursor:already?"default":"pointer",fontFamily:F,transition:"all 0.15s"}}>
+                        {CAT_MAP[fi.category]||"📦"} {fi.name} {already?"✓":"+"}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Sections header with manage button */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{...lbl,marginBottom:0}}>Sections</span>
+              <button onClick={()=>setShowSections(true)} style={{fontSize:12,color:store.color,background:"none",border:`1px solid ${store.color}`,borderRadius:8,padding:"3px 10px",cursor:"pointer",fontFamily:F,fontWeight:600}}>⚙ Manage</button>
+            </div>
+
+            {/* Items by category */}
+            {byCategory.map(({cat,its})=>(
+              <div key={cat} style={{marginBottom:14}}>
+                <span style={lbl}>{CAT_MAP[cat]||"📦"} {cat}</span>
+                {its.map(item=>(
+                  <ItemRow key={item.id} item={item} color={store.color} accent={store.accent} categories={catOrder}
+                    onCheck={()=>toggleCheck(item.id)} onRemove={()=>removeItem(item.id)} onUpdate={upd=>updateItem(item.id,upd)}/>
+                ))}
+              </div>
+            ))}
+
+            {/* Items in hidden/unknown categories */}
+            {otherUnchecked.length>0&&(
+              <div style={{marginBottom:14}}>
+                <span style={lbl}>📦 Other</span>
+                {otherUnchecked.map(item=>(
+                  <ItemRow key={item.id} item={item} color={store.color} accent={store.accent} categories={catOrder}
+                    onCheck={()=>toggleCheck(item.id)} onRemove={()=>removeItem(item.id)} onUpdate={upd=>updateItem(item.id,upd)}/>
+                ))}
+              </div>
+            )}
+
+            {unchecked.length===0&&checked.length===0&&(
+              <div style={{textAlign:"center",color:"#bbb",padding:"52px 0",fontSize:15,lineHeight:1.9}}>
+                Your list is empty.<br/>Add items above or use Quick Add.
+              </div>
+            )}
+
+            {unchecked.some(i=>i.price)&&(
+              <div style={{background:"#f5f5f5",borderRadius:12,padding:"12px 16px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center",border:"1px solid #ececec"}}>
+                <span style={{color:"#888",fontSize:13}}>Still to buy</span>
+                <span style={{color:store.color,fontWeight:700,fontSize:19}}>${unchTotal.toFixed(2)}</span>
+              </div>
+            )}
+
+            {checked.length>0&&(
+              <>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{...lbl,marginBottom:0}}>✓ In Basket ({checked.length})</span>
+                  <button onClick={clearChecked} style={{fontSize:12,color:"#e05555",background:"none",border:"none",cursor:"pointer",fontFamily:F}}>Clear</button>
+                </div>
+                {checked.map(item=>(
+                  <ItemRow key={item.id} item={item} color={store.color} accent={store.accent} checked categories={catOrder}
+                    onCheck={()=>toggleCheck(item.id)} onRemove={()=>removeItem(item.id)} onUpdate={upd=>updateItem(item.id,upd)}/>
+                ))}
+                {checked.some(i=>i.price)&&(
+                  <div style={{textAlign:"right",color:"#aaa",fontSize:13,marginTop:4}}>
+                    Basket: <strong style={{color:"#555"}}>${checked.reduce((s,i)=>s+(parseFloat(i.price)||0)*(i.qty||1),0).toFixed(2)}</strong>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {/* ═══ FREQUENT ═══ */}
+        {view==="frequent"&&(
+          <>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{color:"#1a1a1a",fontWeight:700,fontSize:15}}>⭐ Frequent at {store.name}</div>
+              <button onClick={()=>setAddingFreq(true)} style={{background:store.color,color:"white",border:"none",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:F}}>+ Add</button>
+            </div>
+
+            {addingFreq&&(
+              <div style={card}>
+                <input value={newFreqName} onChange={e=>setNewFreqName(e.target.value)} placeholder="Item name…" style={{...inp,width:"100%",marginBottom:8}}/>
+                <div style={{display:"flex",gap:8}}>
+                  <select value={newFreqCat} onChange={e=>setNewFreqCat(e.target.value)} style={{...inp,flex:1}}>
+                    {catOrder.map(c=><option key={c} value={c}>{CAT_MAP[c]||"📦"} {c}</option>)}
+                  </select>
+                  <button onClick={addFreqItem} style={{flex:1,background:store.color,color:"white",border:"none",borderRadius:9,fontWeight:700,fontSize:14,cursor:"pointer",fontFamily:F}}>Save</button>
+                  <button onClick={()=>setAddingFreq(false)} style={{padding:"0 12px",background:"#f0f0f0",border:"none",borderRadius:9,color:"#888",cursor:"pointer",fontSize:16}}>✕</button>
+                </div>
+              </div>
+            )}
+
+            {freqItems.length===0&&!addingFreq&&(
+              <div style={{textAlign:"center",color:"#ccc",padding:"52px 0",fontSize:15,lineHeight:1.9}}>No frequent items yet.<br/>Add things you buy here regularly.</div>
+            )}
+
+            {ALL_CATS.map(c=>{
+              const catItems=freqItems.filter(f=>f.category===c.name);
+              if(!catItems.length) return null;
+              return (
+                <div key={c.name} style={{marginBottom:14}}>
+                  <span style={lbl}>{c.emoji} {c.name}</span>
+                  {catItems.map(fi=>{
+                    const already=inListSet.has(fi.name.toLowerCase());
+                    return (
+                      <div key={fi.id} style={{display:"flex",alignItems:"center",background:"#f5f5f5",borderRadius:10,padding:"11px 14px",marginBottom:6,gap:10,border:"1px solid #ececec"}}>
+                        <span style={{flex:1,fontSize:15,color:"#1a1a1a"}}>{fi.name}</span>
+                        <button onClick={()=>{addFromFreq(fi);setView("list");}} disabled={already} style={{padding:"5px 12px",borderRadius:8,border:"none",background:already?"#e8e8e8":store.color,color:already?"#888":"white",fontSize:12,fontWeight:600,cursor:already?"default":"pointer",fontFamily:F}}>
+                          {already?"Added ✓":"+ List"}
+                        </button>
+                        <button onClick={()=>removeFreqItem(fi.id)} style={{background:"none",border:"none",color:"#ccc",fontSize:18,cursor:"pointer",padding:0}}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {/* ═══ SHARE ═══ */}
+        {view==="share"&&(
+          <>
+            <div style={{color:"#1a1a1a",fontWeight:700,fontSize:16,marginBottom:6}}>🔗 Share & Collaborate</div>
+            <div style={{color:"#888",fontSize:13,marginBottom:20,lineHeight:1.7}}>Share your list with family or housemates. Anyone with the code can view and edit in real time — changes sync every 5 seconds.</div>
+
+            {!blobId?(
+              <>
+                <button onClick={startSharing} disabled={shareCreating} style={{width:"100%",padding:16,background:shareCreating?"#e8e8e8":`linear-gradient(135deg,${store.color},#1abc9c)`,color:shareCreating?"#888":"white",border:"none",borderRadius:14,fontWeight:700,fontSize:16,cursor:shareCreating?"default":"pointer",fontFamily:F,marginBottom:24}}>
+                  {shareCreating?"⟳ Creating shared list…":"🚀 Start Sharing My List"}
+                </button>
+                <div style={{color:"#ccc",fontSize:11,textAlign:"center",marginBottom:16,letterSpacing:2}}>— OR JOIN EXISTING —</div>
+                <div style={card}>
+                  <span style={lbl}>Enter a list code</span>
+                  <input value={joinCode} onChange={e=>{setJoinCode(e.target.value);setJoinError("");}} placeholder="Paste code here…" style={{...inp,width:"100%",marginBottom:8,fontSize:14}}/>
+                  {joinError&&<div style={{color:"#c06060",fontSize:12,marginBottom:8}}>{joinError}</div>}
+                  <button onClick={joinList} style={{width:"100%",padding:12,background:"#27ae60",color:"white",border:"none",borderRadius:9,fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:F}}>Join List</button>
+                </div>
+              </>
+            ):(
+              <>
+                <div style={{background:"#f5f5f5",borderRadius:18,padding:22,marginBottom:14,border:"1px solid #e0e0e0",textAlign:"center"}}>
+                  <span style={{...lbl,display:"block"}}>Your List Code</span>
+                  <div style={{fontSize:13,color:"#333",letterSpacing:1,fontFamily:"monospace",marginBottom:10,wordBreak:"break-all",padding:"0 10px"}}>{blobId}</div>
+                  <div style={{fontSize:12,color:"#aaa",marginBottom:18}}>Share this code with anyone you want to collaborate with</div>
+                  <button onClick={copyCode} style={{padding:"11px 32px",background:showCopied?"#27ae60":"#e8e8e8",color:showCopied?"white":"#333",border:"1px solid #d0d0d0",borderRadius:10,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F,transition:"all 0.2s"}}>
+                    {showCopied?"✓ Copied!":"📋 Copy Code"}
+                  </button>
+                </div>
+                <div style={{...card,marginBottom:14}}>
+                  <span style={lbl}>📡 Live Sync</span>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{color:syncing?"#f39c12":"#27ae60",fontSize:13,fontWeight:600}}>{syncing?"⟳ Syncing…":"● Live"}</span>
+                    {lastSync&&<span style={{color:"#bbb",fontSize:11}}>Last: {lastSync.toLocaleTimeString()}</span>}
+                  </div>
+                  <div style={{fontSize:11,color:"#bbb",marginTop:5}}>Auto-syncs every 5 seconds</div>
+                </div>
+                <button onClick={()=>setBlobId(null)} style={{width:"100%",padding:12,background:"#fff0f0",color:"#e05555",border:"1px solid #f5c0c0",borderRadius:12,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F}}>Stop Sharing</button>
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Modals */}
+      {showAddModal&&(
+        <ItemDetailModal
+          item={blankItem} color={store.color} accent={store.accent} categories={catOrder}
+          onClose={()=>setShowAddModal(false)}
+          onSave={upd=>{ if(upd.name){ mutItems(p=>({...p,[activeStore]:[...(p[activeStore]||[]),{id:uid(),...upd,checked:false}]})); } setShowAddModal(false); }}/>
+      )}
+      {showSections&&(
+        <SectionManager storeId={activeStore} sections={sections} color={store.color} onUpdate={updateSections} onClose={()=>setShowSections(false)}/>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<GroceryApp/>);
+</script>
+</body>
+</html>
