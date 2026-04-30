@@ -100,7 +100,7 @@ const LS_SECS  = "gv4_sections";
 // ── Collaboration (Firebase Realtime Database) ────────────────────────────────
 // Paste your Firebase Realtime Database URL below (no trailing slash).
 // e.g. "https://my-project-default-rtdb.firebaseio.com"
-const FIREBASE_URL = "YOUR_FIREBASE_DATABASE_URL";
+const FIREBASE_URL = "https://smart-list-937be-default-rtdb.firebaseio.com";
 const FB_LISTS = `${FIREBASE_URL}/lists`;
 async function createBlob(data){
   const r = await fetch(`${FB_LISTS}.json`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
