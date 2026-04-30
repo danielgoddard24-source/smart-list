@@ -22,6 +22,7 @@
     select option{background:#fff;color:#1a1a1a}
     @keyframes spin{to{transform:rotate(360deg)}}
     .spinner{animation:spin 0.8s linear infinite;display:inline-block}
+    .tabs-scroll::-webkit-scrollbar{display:none}
   </style>
 </head>
 <body>
@@ -31,7 +32,7 @@ const { useState, useEffect, useCallback, useRef } = React;
 const F = "'DM Sans', sans-serif";
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const STORES = [
+const DEFAULT_STORES = [
   { id:"longos",  name:"Longo's",                  color:"#c0392b", accent:"#e74c3c" },
   { id:"farmboy", name:"Farm Boy",                 color:"#27ae60", accent:"#2ecc71" },
   { id:"rcss",    name:"Real Canadian Superstore", color:"#e67e22", accent:"#f39c12" },
@@ -83,7 +84,7 @@ const DEFAULT_FREQUENT = {
 
 // Default section order per store (all cats active)
 const DEFAULT_SECTIONS = () => Object.fromEntries(
-  STORES.map(s => [s.id, { order: [...DEFAULT_CAT_ORDER], hidden: [] }])
+  ["longos","farmboy","rcss","costco"].map(id => [id, { order: [...DEFAULT_CAT_ORDER], hidden: [] }])
 );
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -95,7 +96,17 @@ const LS = {
 };
 const LS_ITEMS = "gv4_items";
 const LS_FREQ  = "gv4_freq";
-const LS_SECS  = "gv4_sections";
+const LS_SECS   = "gv4_sections";
+const LS_STORES = "gv4_stores";
+
+const STORE_COLORS = [
+  {color:"#c0392b",accent:"#e74c3c"},{color:"#27ae60",accent:"#2ecc71"},
+  {color:"#e67e22",accent:"#f39c12"},{color:"#2471a3",accent:"#3498db"},
+  {color:"#8e44ad",accent:"#9b59b6"},{color:"#16a085",accent:"#1abc9c"},
+  {color:"#d35400",accent:"#e74c3c"},{color:"#2c3e50",accent:"#7f8c8d"},
+  {color:"#7d6608",accent:"#b7950b"},{color:"#1a5276",accent:"#2471a3"},
+  {color:"#943126",accent:"#c0392b"},{color:"#117a65",accent:"#148f77"},
+];
 
 // ── Collaboration (Firebase Realtime Database) ────────────────────────────────
 // Paste your Firebase Realtime Database URL below (no trailing slash).
@@ -593,6 +604,52 @@ function TripMode({ items, store, catOrder, onCheck, onExit }) {
   );
 }
 
+// ── Store Editor Modal ────────────────────────────────────────────────────────
+function StoreEditorModal({store, storeCount, onSave, onDelete, onClose}){
+  const [name,     setName]     = React.useState(store?.name||"");
+  const [selColor, setSelColor] = React.useState(STORE_COLORS.find(c=>c.color===store?.color)||STORE_COLORS[0]);
+  const isNew = !store;
+  const overlay = {position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"};
+  const sheet   = {background:"#fff",borderRadius:"20px 20px 0 0",padding:24,paddingBottom:36,width:"100%",maxWidth:500};
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={sheet} onClick={e=>e.stopPropagation()}>
+        <div style={{fontWeight:700,fontSize:17,marginBottom:18,color:"#1a1a1a"}}>{isNew?"Add Store":"Edit Store"}</div>
+        <div style={{marginBottom:16}}>
+          <span style={{fontSize:10,letterSpacing:2.5,color:"#888",textTransform:"uppercase",display:"block",marginBottom:8}}>Store Name</span>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Whole Foods" autoFocus
+            style={{width:"100%",padding:"10px 12px",background:"#f5f5f5",border:"1px solid #e0e0e0",borderRadius:9,fontSize:15,fontFamily:F,outline:"none",color:"#1a1a1a",boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:22}}>
+          <span style={{fontSize:10,letterSpacing:2.5,color:"#888",textTransform:"uppercase",display:"block",marginBottom:10}}>Color</span>
+          <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
+            {STORE_COLORS.map((c,i)=>(
+              <button key={i} onClick={()=>setSelColor(c)}
+                style={{width:34,height:34,borderRadius:"50%",background:c.color,border:c===selColor?"3px solid #222":"3px solid transparent",cursor:"pointer",outline:"none",transition:"border 0.1s"}}/>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          {!isNew&&storeCount>1&&(
+            <button onClick={onDelete}
+              style={{padding:"11px 14px",background:"#fff0f0",color:"#e05555",border:"1px solid #f5c0c0",borderRadius:10,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F}}>
+              Delete
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{flex:1,padding:12,background:"#f0f0f0",border:"none",borderRadius:10,fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:F,color:"#555"}}>
+            Cancel
+          </button>
+          <button onClick={()=>{if(name.trim()) onSave(name.trim(),selColor.color,selColor.accent);}} disabled={!name.trim()}
+            style={{flex:2,padding:12,background:name.trim()?selColor.color:"#e0e0e0",color:name.trim()?"white":"#aaa",border:"none",borderRadius:10,fontWeight:700,fontSize:14,cursor:name.trim()?"pointer":"default",fontFamily:F,transition:"background 0.2s"}}>
+            {isNew?"Add Store":"Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 function GroceryApp() {
   const [loaded,       setLoaded]       = useState(false);
@@ -611,6 +668,10 @@ function GroceryApp() {
   const [joinError,    setJoinError]    = useState("");
   const [shareCreating,setShareCreating]= useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [stores,        setStores]        = useState(()=>{ const s=LS.get(LS_STORES); return Array.isArray(s)&&s.length?s:DEFAULT_STORES; });
+  const [editingStores, setEditingStores] = useState(false);
+  const [showStoreModal,setShowStoreModal]= useState(false);
+  const [editingStore,  setEditingStore]  = useState(null);
 
   // Add form
   const [newName,     setNewName]     = useState("");
@@ -622,7 +683,7 @@ function GroceryApp() {
   const [newFreqCat,  setNewFreqCat]  = useState("Produce");
 
   // ── Derived ────────────────────────────────────────────────────────────────
-  const store      = STORES.find(s=>s.id===activeStore);
+  const store      = stores.find(s=>s.id===activeStore)||stores[0]||DEFAULT_STORES[0];
   const storeSec   = sections[activeStore] || { order:[...DEFAULT_CAT_ORDER], hidden:[] };
   const catOrder   = storeSec.order.filter(c=>!storeSec.hidden.includes(c));
   const visibleCats = catOrder; // sections visible in list
@@ -653,6 +714,10 @@ function GroceryApp() {
   useEffect(()=>{ if(loaded) LS.set(LS_ITEMS,items); },[items,loaded]);
   useEffect(()=>{ if(loaded) LS.set(LS_FREQ,frequent); },[frequent,loaded]);
   useEffect(()=>{ if(loaded) LS.set(LS_SECS,sections); },[sections,loaded]);
+  useEffect(()=>{ LS.set(LS_STORES,stores); },[stores]);
+  useEffect(()=>{
+    if(stores.length>0&&!stores.find(s=>s.id===activeStore)) setActiveStore(stores[0].id);
+  },[stores,activeStore]);
 
   // ── Cloud sync ─────────────────────────────────────────────────────────────
   const pushCloud = useCallback(async(code,ni,nf,ns)=>{
@@ -713,6 +778,34 @@ function GroceryApp() {
 
   const copyCode=()=>{ navigator.clipboard.writeText(blobId).catch(()=>{}); setShowCopied(true); setTimeout(()=>setShowCopied(false),2000); };
 
+  // ── Store management ───────────────────────────────────────────────────────
+  const addStore = (name,color,accent)=>{
+    const id=`s${uid()}`;
+    setStores(prev=>[...prev,{id,name,color,accent}]);
+    setSections(prev=>({...prev,[id]:{order:[...DEFAULT_CAT_ORDER],hidden:[]}}));
+    setActiveStore(id);
+    setShowStoreModal(false);
+  };
+  const updateStore = (id,name,color,accent)=>{
+    setStores(prev=>prev.map(s=>s.id===id?{...s,name,color,accent}:s));
+    setShowStoreModal(false);
+  };
+  const removeStore = (id)=>{
+    const s=stores.find(st=>st.id===id);
+    if(!window.confirm(`Delete "${s?.name}"? All its items will be removed.`)) return;
+    const remaining=stores.filter(st=>st.id!==id);
+    if(activeStore===id) setActiveStore(remaining[0].id);
+    setStores(remaining);
+    setItems(prev=>{const{[id]:_,...rest}=prev;return rest;});
+    setFrequent(prev=>{const{[id]:_,...rest}=prev;return rest;});
+    setSections(prev=>{const{[id]:_,...rest}=prev;return rest;});
+    setShowStoreModal(false);
+  };
+  const handleStoreSave = (name,color,accent)=>{
+    if(editingStore) updateStore(editingStore.id,name,color,accent);
+    else addStore(name,color,accent);
+  };
+
   // ── Styles ─────────────────────────────────────────────────────────────────
   const inp  = { padding:"10px 12px", background:"#f5f5f5", border:"1px solid #e0e0e0", borderRadius:9, fontSize:14, color:"#1a1a1a", fontFamily:F, outline:"none" };
   const lbl  = { fontSize:10, letterSpacing:2.5, color:"#888", textTransform:"uppercase", marginBottom:8, display:"block" };
@@ -753,18 +846,37 @@ function GroceryApp() {
         </div>
 
         {/* Store tabs */}
-        <div style={{display:"flex",gap:2,marginTop:14}}>
-          {STORES.map(s=>{
-            const cnt=(items[s.id]||[]).filter(i=>!i.checked).length;
-            const active=s.id===activeStore;
-            const short=s.id==="rcss"?"RCSS":s.id==="farmboy"?"Farm Boy":s.name.split(" ")[0];
-            return (
-              <button key={s.id} onClick={()=>{setActiveStore(s.id);setView("list");}} style={{flex:1,background:active?s.color:"#f0f0f0",color:active?"white":"#888",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 4px",fontSize:11,fontWeight:active?700:500,cursor:"pointer",whiteSpace:"nowrap",transition:"all 0.2s",fontFamily:F,position:"relative"}}>
-                {short}
-                {cnt>0&&<span style={{position:"absolute",top:3,right:3,background:active?"rgba(255,255,255,0.3)":s.color,color:"white",borderRadius:10,fontSize:9,padding:"1px 5px",fontWeight:700}}>{cnt}</span>}
-              </button>
-            );
-          })}
+        <div style={{display:"flex",alignItems:"flex-end",gap:2,marginTop:14}}>
+          <div className="tabs-scroll" style={{flex:1,display:"flex",gap:2,overflowX:"auto",scrollbarWidth:"none",WebkitOverflowScrolling:"touch"}}>
+            {stores.map(s=>{
+              const cnt=(items[s.id]||[]).filter(i=>!i.checked).length;
+              const active=s.id===activeStore;
+              const short=s.name.split(" ")[0].slice(0,10);
+              if(editingStores) return (
+                <div key={s.id} style={{position:"relative",flexShrink:0}}>
+                  <button onClick={()=>{setEditingStore(s);setShowStoreModal(true);}}
+                    style={{background:s.color,color:"white",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 14px",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",fontFamily:F,minWidth:72}}>
+                    {short}
+                  </button>
+                  {stores.length>1&&<button onClick={e=>{e.stopPropagation();removeStore(s.id);}}
+                    style={{position:"absolute",top:-6,right:-5,background:"#e05555",color:"white",border:"2px solid white",borderRadius:"50%",width:18,height:18,fontSize:11,lineHeight:"14px",padding:0,cursor:"pointer",zIndex:2}}>×</button>}
+                </div>
+              );
+              return (
+                <button key={s.id} onClick={()=>{setActiveStore(s.id);setView("list");}}
+                  style={{background:active?s.color:"#f0f0f0",color:active?"white":"#888",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 14px",fontSize:11,fontWeight:active?700:500,cursor:"pointer",whiteSpace:"nowrap",transition:"all 0.2s",fontFamily:F,position:"relative",flexShrink:0,minWidth:72}}>
+                  {short}
+                  {cnt>0&&<span style={{position:"absolute",top:3,right:4,background:active?"rgba(255,255,255,0.3)":s.color,color:"white",borderRadius:10,fontSize:9,padding:"1px 5px",fontWeight:700}}>{cnt}</span>}
+                </button>
+              );
+            })}
+            {editingStores&&<button onClick={()=>{setEditingStore(null);setShowStoreModal(true);}}
+              style={{background:"#e8e8e8",color:"#555",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 14px",fontSize:18,lineHeight:1,cursor:"pointer",fontFamily:F,flexShrink:0}}>+</button>}
+          </div>
+          <button onClick={()=>setEditingStores(v=>!v)}
+            style={{background:editingStores?"#444":"#e8e8e8",color:editingStores?"white":"#888",border:"none",borderRadius:"10px 10px 0 0",padding:"8px 10px",fontSize:editingStores?11:13,fontWeight:600,cursor:"pointer",fontFamily:F,flexShrink:0,whiteSpace:"nowrap"}}>
+            {editingStores?"Done":"✏"}
+          </button>
         </div>
       </div>
 
@@ -979,6 +1091,15 @@ function GroceryApp() {
       )}
       {showSections&&(
         <SectionManager storeId={activeStore} sections={sections} color={store.color} onUpdate={updateSections} onClose={()=>setShowSections(false)}/>
+      )}
+      {showStoreModal&&(
+        <StoreEditorModal
+          store={editingStore}
+          storeCount={stores.length}
+          onSave={handleStoreSave}
+          onDelete={()=>{ if(editingStore) removeStore(editingStore.id); }}
+          onClose={()=>setShowStoreModal(false)}
+        />
       )}
     </div>
   );
