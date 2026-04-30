@@ -720,24 +720,30 @@ function GroceryApp() {
   },[stores,activeStore]);
 
   // ── Cloud sync ─────────────────────────────────────────────────────────────
-  const pushCloud = useCallback(async(code,ni,nf,ns)=>{
+  const pushCloud = useCallback(async(code,ni,nf,ns,nst)=>{
     if(!code) return;
     setSyncing(true);
-    try{ await putBlob(code,{items:ni,frequent:nf,sections:ns,updatedAt:Date.now()}); setLastSync(new Date()); }
+    try{ await putBlob(code,{items:ni,frequent:nf,sections:ns,stores:nst,updatedAt:Date.now()}); setLastSync(new Date()); }
     finally{ setSyncing(false); }
   },[]);
 
   const pullCloud = useCallback(async(code)=>{
     const d=await getBlob(code);
-    if(d){ setItems(d.items||{}); setFrequent(d.frequent||DEFAULT_FREQUENT); if(d.sections) setSections(d.sections); setLastSync(new Date()); }
+    if(d){
+      setItems(d.items||{});
+      setFrequent(d.frequent||DEFAULT_FREQUENT);
+      if(d.sections) setSections(d.sections);
+      if(d.stores&&Array.isArray(d.stores)&&d.stores.length) setStores(d.stores);
+      setLastSync(new Date());
+    }
   },[]);
 
   useEffect(()=>{ if(!blobId) return; const iv=setInterval(()=>pullCloud(blobId),5000); return()=>clearInterval(iv); },[blobId,pullCloud]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
-  const mutItems = fn => setItems(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,next,frequent,sections); return next; });
-  const mutFreq  = fn => setFrequent(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,next,sections); return next; });
-  const mutSecs  = fn => setSections(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,frequent,next); return next; });
+  const mutItems = fn => setItems(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,next,frequent,sections,stores); return next; });
+  const mutFreq  = fn => setFrequent(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,next,sections,stores); return next; });
+  const mutSecs  = fn => setSections(prev=>{ const next=fn(prev); if(blobId) pushCloud(blobId,items,frequent,next,stores); return next; });
 
   const addItem = (overrides={}) => {
     const name = (overrides.name||newName).trim();
@@ -764,7 +770,7 @@ function GroceryApp() {
   // ── Sharing ────────────────────────────────────────────────────────────────
   const startSharing = async()=>{
     setShareCreating(true);
-    try{ const id=await createBlob({items,frequent,sections,updatedAt:Date.now()}); setBlobId(id); setLastSync(new Date()); }
+    try{ const id=await createBlob({items,frequent,sections,stores,updatedAt:Date.now()}); setBlobId(id); setLastSync(new Date()); }
     catch(e){ alert("Could not create shared list. "+(e.message||"Check your connection.")); }
     finally{ setShareCreating(false); }
   };
@@ -773,6 +779,7 @@ function GroceryApp() {
     const id=joinCode.trim(); if(!id){setJoinError("Enter a valid list code.");return;}
     const d=await getBlob(id); if(!d){setJoinError("No list found with that code.");return;}
     setItems(d.items||{}); setFrequent(d.frequent||DEFAULT_FREQUENT); if(d.sections) setSections(d.sections);
+    if(d.stores&&Array.isArray(d.stores)&&d.stores.length) setStores(d.stores);
     setBlobId(id); setJoinError(""); setView("list");
   };
 
@@ -781,25 +788,34 @@ function GroceryApp() {
   // ── Store management ───────────────────────────────────────────────────────
   const addStore = (name,color,accent)=>{
     const id=`s${uid()}`;
-    setStores(prev=>[...prev,{id,name,color,accent}]);
-    setSections(prev=>({...prev,[id]:{order:[...DEFAULT_CAT_ORDER],hidden:[]}}));
+    const newStores   = [...stores,{id,name,color,accent}];
+    const newSections = {...sections,[id]:{order:[...DEFAULT_CAT_ORDER],hidden:[]}};
+    setStores(newStores);
+    setSections(newSections);
     setActiveStore(id);
     setShowStoreModal(false);
+    if(blobId) pushCloud(blobId,items,frequent,newSections,newStores);
   };
   const updateStore = (id,name,color,accent)=>{
-    setStores(prev=>prev.map(s=>s.id===id?{...s,name,color,accent}:s));
+    const newStores = stores.map(s=>s.id===id?{...s,name,color,accent}:s);
+    setStores(newStores);
     setShowStoreModal(false);
+    if(blobId) pushCloud(blobId,items,frequent,sections,newStores);
   };
   const removeStore = (id)=>{
     const s=stores.find(st=>st.id===id);
     if(!window.confirm(`Delete "${s?.name}"? All its items will be removed.`)) return;
-    const remaining=stores.filter(st=>st.id!==id);
-    if(activeStore===id) setActiveStore(remaining[0].id);
-    setStores(remaining);
-    setItems(prev=>{const{[id]:_,...rest}=prev;return rest;});
-    setFrequent(prev=>{const{[id]:_,...rest}=prev;return rest;});
-    setSections(prev=>{const{[id]:_,...rest}=prev;return rest;});
+    const newStores   = stores.filter(st=>st.id!==id);
+    const {[id]:_i,...newItems}    = items;
+    const {[id]:_f,...newFrequent} = frequent;
+    const {[id]:_s,...newSections} = sections;
+    if(activeStore===id) setActiveStore(newStores[0].id);
+    setStores(newStores);
+    setItems(newItems);
+    setFrequent(newFrequent);
+    setSections(newSections);
     setShowStoreModal(false);
+    if(blobId) pushCloud(blobId,newItems,newFrequent,newSections,newStores);
   };
   const handleStoreSave = (name,color,accent)=>{
     if(editingStore) updateStore(editingStore.id,name,color,accent);
